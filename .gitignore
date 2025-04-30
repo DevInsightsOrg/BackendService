@@ -1,0 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual environments
+*.venv/
+*.env/
+Pipfile.lock
+pipenv.lock
+
+# Environment variables
+.env
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+*.log
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+*.cover
+.hypothesis/
+.cache
+pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Mac-specific files
+.DS_Store
+
+# Editor-specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# FastAPI auto-generated docs
+*.db
