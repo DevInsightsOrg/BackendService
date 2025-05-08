@@ -6,7 +6,7 @@ import asyncio
 import sys
 sys.path.append('/Users/zehraiyigun/Desktop/DevInsights')
 from utils.github_auth import get_github_headers  # Fixed import path
-import BackendService.crud as crud
+import crud as crud
 from dotenv import load_dotenv
 
 router = APIRouter()

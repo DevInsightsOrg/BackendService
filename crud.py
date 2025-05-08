@@ -1,5 +1,5 @@
 # app/crud.py
-from BackendService.database import get_db_connection
+from database import get_db_connection
 from fastapi import HTTPException
 import mysql.connector
 
