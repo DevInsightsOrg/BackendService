@@ -8,7 +8,9 @@ import uvicorn
 import dotenv
 from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
-from controllers.Github_Api_Controller import router as github_router 
+from controllers.Github_Api_Controller import router as github_router
+from controllers.auth_controller import router as auth_router
+from controllers import analytics_controller
 
 # Lifecycle Manager for Kafka Consumer
 @asynccontextmanager
@@ -29,6 +31,8 @@ app.add_middleware(
 
 # Include GitHub API controller routes
 app.include_router(github_router)
+app.include_router(auth_router)
+app.include_router(analytics_controller.router)
 
 @app.get("/")
 async def root():
@@ -36,4 +40,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

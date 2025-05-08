@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 import httpx
 import os
 from typing import List
@@ -13,6 +13,48 @@ router = APIRouter()
 load_dotenv()
 
 GITHUB_API_BASE = "https://api.github.com"
+
+@router.get("/user/repositories")
+async def get_user_repositories(request: Request):
+    """
+    Get repositories for the authenticated user
+    """
+    authorization = request.headers.get("Authorization")
+    
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+    
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.github.com/user/repos?sort=updated&per_page=100",
+                headers={"Authorization": f"token {token}"}
+            )
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch repositories")
+            
+            repos_data = response.json()
+            
+            # Transform to your app's repository format
+            repositories = []
+            for repo in repos_data:
+                repositories.append({
+                    "id": str(repo.get("id")),
+                    "name": repo.get("name"),
+                    "description": repo.get("description"),
+                    "language": repo.get("language"),
+                    "isPrivate": repo.get("private", False),
+                    "fullName": repo.get("full_name"),
+                    "url": repo.get("html_url"),
+                    "lastSyncDate": None  # You would track this in your database
+                })
+            
+            return repositories
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch repositories: {str(e)}")
 
 # Utility to get GitHub headers
 def get_github_headers():
@@ -69,8 +111,65 @@ def get_repo_id(repo_name):
         return 1  # Fallback to placeholder value
 
 
+# @router.get("/commits")
+# async def fetch_commits(
+#     repo: str = Query(..., description="Format: username/repository"),
+#     branch: str = Query("main", description="Branch name (default: main)"),
+#     limit: int = Query(10, description="Number of commits to fetch")
+# ):
+#     """
+#     Fetch latest commits from a GitHub repository branch.
+#     """
+#     url = f"{GITHUB_API_BASE}/repos/{repo}/commits?sha={branch}&per_page={limit}"
+
+#     try:
+#         async with httpx.AsyncClient() as client:
+#             response = await client.get(url, headers=get_github_headers())
+#             response.raise_for_status()  # This will raise an exception for 4xx/5xx errors
+#             raw_commits = response.json()
+
+#         commits = []
+#         for c in raw_commits:
+#             sha = c.get("sha")
+#             author_name = c.get("commit", {}).get("author", {}).get("name")
+#             date = c.get("commit", {}).get("author", {}).get("date")
+#             message = c.get("commit", {}).get("message")
+#             commit_url = c.get("html_url")
+            
+#             # Save to database
+#             repo_id = get_repo_id(repo)
+#             crud.insert_commit(repo_id, sha, author_name, date, message, commit_url)
+            
+#             commits.append({
+#                 "sha": sha,
+#                 "author": author_name,
+#                 "date": date,
+#                 "message": message,
+#                 "url": commit_url
+#             })
+
+#         return {"repository": repo, "branch": branch, "commits": commits}
+
+#     except httpx.HTTPStatusError as e:
+#         print(f"Error response from GitHub API: {e.response.text}")  # Print the full response error message
+#         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
+
+def get_github_headers_from_request(request):
+    """Get GitHub headers from the request's Authorization header"""
+    authorization = request.headers.get("Authorization")
+    
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+    
+    token = authorization.replace("Bearer ", "")
+    return {"Authorization": f"token {token}"}
+
+# Then update each endpoint to use this function:
 @router.get("/commits")
 async def fetch_commits(
+    request: Request,
     repo: str = Query(..., description="Format: username/repository"),
     branch: str = Query("main", description="Branch name (default: main)"),
     limit: int = Query(10, description="Number of commits to fetch")
@@ -82,10 +181,8 @@ async def fetch_commits(
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=get_github_headers())
-            response.raise_for_status()  # This will raise an exception for 4xx/5xx errors
-            raw_commits = response.json()
-
+            response = await client.get(url, headers=get_github_headers_from_request(request))
+        
         commits = []
         for c in raw_commits:
             sha = c.get("sha")
