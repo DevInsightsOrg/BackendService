@@ -7,6 +7,8 @@ import json
 import uvicorn
 import dotenv
 from openai import OpenAI
+from fastapi.middleware.cors import CORSMiddleware
+from controllers.Github_Api_Controller import router as github_router 
 
 # Lifecycle Manager for Kafka Consumer
 @asynccontextmanager
@@ -25,7 +27,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include GitHub API controller routes
+app.include_router(github_router)
+
 @app.get("/")
 async def root():
     return {"message": "FastAPI with Milvus is running!"}
 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
