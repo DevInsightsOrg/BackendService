@@ -8,6 +8,8 @@ sys.path.append('/Users/zehraiyigun/Desktop/DevInsights')
 from utils.github_auth import get_github_headers  # Fixed import path
 import crud as crud
 from dotenv import load_dotenv
+import services.Graph_db_service as graph_db_service
+import time
 
 router = APIRouter()
 load_dotenv()
@@ -83,33 +85,104 @@ async def fetch_commits(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=get_github_headers())
-            response.raise_for_status()  # This will raise an exception for 4xx/5xx errors
+            response.raise_for_status()
             raw_commits = response.json()
+            
+            start_detail_time = time.time()
+            # Get detailed commit data for each commit
+            detailed_commits = []
+            for commit in raw_commits:
+                sha = commit.get("sha")
+                detail_url = f"{GITHUB_API_BASE}/repos/{repo}/commits/{sha}"
+                detail_resp = await client.get(detail_url, headers=get_github_headers())
+                if detail_resp.status_code == 200:
+                    detailed_commits.append(detail_resp.json())
+                else:
+                    print(f"Warning: Could not fetch details for commit {sha}")
+                    detailed_commits.append(commit)  # Use basic commit info if details not available
+
+            end_detail_time = time.time()
+            print(f"Time taken to fetch detailed commit data: {end_detail_time - start_detail_time} seconds")
 
         commits = []
-        for c in raw_commits:
+        repository_info = {
+            "name": repo,
+            "url": f"https://github.com/{repo}",
+            "description": f"Repository {repo}, branch {branch}"
+        }
+        
+        for c in detailed_commits:
+            print("Processing commit:", c.get("sha"))
             sha = c.get("sha")
-            author_name = c.get("commit", {}).get("author", {}).get("name")
-            date = c.get("commit", {}).get("author", {}).get("date")
-            message = c.get("commit", {}).get("message")
-            commit_url = c.get("html_url")
             
-            # Save to database
+            # Get basic commit info
+            commit_details = c.get("commit", {})
+            author_details = commit_details.get("author", {})
+            author_name = author_details.get("name", "Unknown")
+            author_email = author_details.get("email", "")
+            date = author_details.get("date")
+            message = commit_details.get("message", "")
+            commit_url = c.get("html_url", "")
+            
+            # Get GitHub username (login) if available
+            github_author = c.get("author", {})
+            author_github = github_author.get("login", "") if github_author else ""
+            
+            # Extract file changes
+            files = c.get("files", [])
+            added_files = []
+            modified_files = []
+            deleted_files = []
+            
+            for file in files:
+                status = file.get("status", "")
+                path = file.get("filename", "")
+                
+                if status == "added":
+                    added_files.append(path)
+                elif status == "modified":
+                    modified_files.append(path)
+                elif status == "removed":
+                    deleted_files.append(path)
+            
+            # Save to SQL database
             repo_id = get_repo_id(repo)
+            start_crud_time = time.time()
             crud.insert_commit(repo_id, sha, author_name, date, message, commit_url)
+            end_crud_time = time.time()
+            print(f"Time taken to insert commit data into SQL: {end_crud_time - start_crud_time} seconds")
             
+            start_graph_time = time.time()
+            # Process for Neo4j graph database
+            await graph_db_service.process_commit_data(
+                sha=sha,
+                author_name=author_name,
+                author_email=author_email,
+                author_github=author_github,
+                date=date,
+                message=message,
+                added_files=added_files,
+                modified_files=modified_files,
+                deleted_files=deleted_files,
+                repository_info=repository_info
+            )
+            end_graph_time = time.time()
+            print(f"Time taken to insert commit data into Neo4j: {end_graph_time - start_graph_time} seconds")
+
+            # Build response
             commits.append({
                 "sha": sha,
                 "author": author_name,
                 "date": date,
                 "message": message,
-                "url": commit_url
+                "url": commit_url,
+                "files_changed": len(added_files) + len(modified_files) + len(deleted_files)
             })
 
         return {"repository": repo, "branch": branch, "commits": commits}
 
     except httpx.HTTPStatusError as e:
-        print(f"Error response from GitHub API: {e.response.text}")  # Print the full response error message
+        print(f"Error response from GitHub API: {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
