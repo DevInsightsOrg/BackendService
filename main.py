@@ -9,6 +9,7 @@ import dotenv
 from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
 from controllers.Github_Api_Controller import router as github_router 
+from controllers.developer_insights_controller import router as developer_insights_router
 
 # Lifecycle Manager for Kafka Consumer
 @asynccontextmanager
@@ -29,6 +30,7 @@ app.add_middleware(
 
 # Include GitHub API controller routes
 app.include_router(github_router)
+app.include_router(developer_insights_router)
 
 @app.get("/")
 async def root():
