@@ -71,7 +71,10 @@ class GraphQueries:
         
     def get_mavens(self, repo_name: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        Find developers with expertise in specific areas (Mavens) based on rarely reached files.
+        Identify mavens by directly using the critical files approach.
+        
+        This implementation first finds files with single contributors (critical files),
+        then identifies the developers who are those sole contributors.
         
         Args:
             repo_name: Repository name (e.g., "username/repo")
@@ -81,54 +84,72 @@ class GraphQueries:
             List of mavens sorted by decreasing mavenness score
         """
         with self.driver.session() as session:
-            # First count all files to use later
-            count_result = session.run("""
-                MATCH (f:File)-[:BELONGS_TO]->(:Repository {name: $repo_name})
-                RETURN count(f) as total_file_count
-            """, repo_name=repo_name)
-            
-            # Important: retrieve the value before the result is consumed
-            total_records = count_result.single()
-            if total_records is None:
-                # No files found
-                return []
-                
-            total_file_count = total_records["total_file_count"]
-            
-            # Now find the rarely reachable files and their developers in a separate query
-            result = session.run("""
-                // Identify Mavens - experts on specific files with rare knowledge
+            # First, find all critical files (files with a single contributor)
+            critical_files_result = session.run("""
                 MATCH (r:Repository {name: $repo_name})
                 MATCH (f:File)-[:BELONGS_TO]->(r)
                 
-                // Find files and who can reach them
-                MATCH (d:Developer)-[:BELONGS_TO]->(r)
-                OPTIONAL MATCH path = (d)<-[:COMMITTED_BY]-(c:Commit)-[:ADDED|MODIFIED|DELETED]->(f)
-                WHERE length(path) <= 10
+                // Find all developers who contributed to this file
+                OPTIONAL MATCH (c:Commit)-[:ADDED|MODIFIED|DELETED]->(f)
+                OPTIONAL MATCH (c)-[:COMMITTED_BY]->(d:Developer)
                 
-                WITH f, collect(DISTINCT d) as developers
-                WHERE size(developers) = 1 
-                // Files reached by only one developer - "rarely reachable files"
+                WITH f, count(DISTINCT d) as contributor_count
+                WHERE contributor_count = 1
                 
-                WITH developers[0] as maven, collect(f) as rare_files
-                
-                // Calculate mavenness score
-                WITH maven, rare_files, size(rare_files) as rare_files_count, $total_file_count as total_file_count
-                WHERE rare_files_count > 0
+                // Find who that single contributor is
+                MATCH (c:Commit)-[:ADDED|MODIFIED|DELETED]->(f)
+                MATCH (c)-[:COMMITTED_BY]->(sole_contributor:Developer)
                 
                 RETURN 
-                    maven.github as github,
-                    maven.name as name,
-                    maven.email as email,
-                    rare_files_count as rare_files_count,
-                    toFloat(rare_files_count) / total_file_count as mavenness
-                ORDER BY mavenness DESC
-                LIMIT $limit
-            """, repo_name=repo_name, total_file_count=total_file_count, limit=limit)
+                    f.path as file_path,
+                    sole_contributor.github as github
+            """, repo_name=repo_name)
             
-            # Important: collect all records before the result is consumed
-            maven_records = list(result)
-            return [record.data() for record in maven_records]
+            # Build a map of developer to their critical files
+            dev_to_files = {}
+            for record in critical_files_result:
+                github = record["github"]
+                file_path = record["file_path"]
+                
+                if github not in dev_to_files:
+                    dev_to_files[github] = []
+                
+                dev_to_files[github].append(file_path)
+            
+            # Get the total number of files for calculating mavenness
+            file_count_result = session.run("""
+                MATCH (f:File)-[:BELONGS_TO]->(:Repository {name: $repo_name})
+                RETURN count(f) as total_files
+            """, repo_name=repo_name)
+            
+            total_files = file_count_result.single()["total_files"]
+            
+            # Get developer details and build the maven results
+            maven_results = []
+            for github, files in dev_to_files.items():
+                # Get developer details
+                dev_result = session.run("""
+                    MATCH (d:Developer {github: $github})-[:BELONGS_TO]->(:Repository {name: $repo_name})
+                    RETURN d.name as name, d.email as email
+                """, github=github, repo_name=repo_name)
+                
+                dev_record = dev_result.single()
+                
+                # Calculate mavenness score
+                rare_files_count = len(files)
+                mavenness = float(rare_files_count) / total_files
+                
+                maven_results.append({
+                    "github": github,
+                    "name": dev_record["name"] if dev_record and "name" in dev_record else None,
+                    "email": dev_record["email"] if dev_record and "email" in dev_record else None,
+                    "rare_files_count": rare_files_count,
+                    "mavenness": mavenness
+                })
+            
+            # Sort by mavenness score and limit results
+            maven_results.sort(key=lambda x: x["mavenness"], reverse=True)
+            return maven_results[:limit]
         
     def get_connectors(self, repo_name: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
