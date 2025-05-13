@@ -132,7 +132,7 @@ class GraphQueries:
                     MATCH (d:Developer {github: $github})-[:BELONGS_TO]->(:Repository {name: $repo_name})
                     RETURN d.name as name, d.email as email
                 """, github=github, repo_name=repo_name)
-                
+                                
                 dev_record = dev_result.single()
                 
                 # Calculate mavenness score
@@ -141,8 +141,8 @@ class GraphQueries:
                 
                 maven_results.append({
                     "github": github,
-                    "name": dev_record["name"] if dev_record and "name" in dev_record else None,
-                    "email": dev_record["email"] if dev_record and "email" in dev_record else None,
+                    "name": dev_record["name"] if dev_record and dev_record["name"] is not None else None,
+                    "email": dev_record["email"] if dev_record and dev_record["email"] is not None else None,
                     "rare_files_count": rare_files_count,
                     "mavenness": mavenness
                 })
