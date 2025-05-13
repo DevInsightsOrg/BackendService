@@ -23,7 +23,11 @@ async def process_commit_data(
     added_files: list = None,
     modified_files: list = None,
     deleted_files: list = None,
-    repository_info: dict = None
+    repository_info: dict = None,
+    lines_added: int = 0,
+    lines_removed: int = 0,
+    overall_code_quality: float = 0,
+    commit_type_set: list = None
 ):
     """Process a commit with repository context using individual fields"""
     if not repository_info:
@@ -43,7 +47,11 @@ async def process_commit_data(
         added_files or [],
         modified_files or [],
         deleted_files or [],
-        repository_info
+        repository_info,
+        lines_added,
+        lines_removed,
+        overall_code_quality,
+        commit_type_set
     )
 
 def _process_commit_sync(
@@ -56,9 +64,17 @@ def _process_commit_sync(
     added_files,
     modified_files,
     deleted_files,
-    repository_info
+    repository_info,
+    lines_added=0,
+    lines_removed=0,
+    overall_code_quality=0,
+    commit_type_set=None
 ):
     """Synchronous version to run in executor"""
+    # Default value if None is passed
+    if commit_type_set is None:
+        commit_type_set = ["GENERAL"]
+        
     driver = get_db_driver()
     try:
         with driver.session() as session:
@@ -80,7 +96,7 @@ def _process_commit_sync(
                 "message": message,
                 "author": author
             }
-            _create_commit(session, commit_data, repository_info["name"])
+            _create_commit(session, commit_data, repository_info["name"], overall_code_quality, commit_type_set)
             
             # Create relationships
             _link_commit_to_developer(session, commit_data, repository_info["name"])
@@ -122,15 +138,26 @@ def _create_developer(session, author, repo_name):
     repo_name=repo_name)
 
 
-def _create_commit(session, commit, repo_name):
+def _create_commit(session, commit, repo_name, overall_code_quality=0, commit_type_set=None):
+    if commit_type_set is None:
+        commit_type_set = ["GENERAL"]
+        
     session.run("""
         MERGE (c:Commit {hash: $hash})
         SET c.timestamp = datetime($timestamp), 
-            c.message = $message
+            c.message = $message,
+            c.overall_code_quality = $quality,
+            c.commit_types = $types
         WITH c
         MATCH (r:Repository {name: $repo_name})
         MERGE (c)-[:BELONGS_TO]->(r)
-    """, hash=commit["hash"], timestamp=commit["timestamp"], message=commit["message"], repo_name=repo_name)
+    """, 
+    hash=commit["hash"], 
+    timestamp=commit["timestamp"], 
+    message=commit["message"], 
+    repo_name=repo_name,
+    quality=overall_code_quality,
+    types=commit_type_set)
 
 
 def _link_commit_to_developer(session, commit, repo_name):

@@ -10,11 +10,19 @@ import crud as crud
 from dotenv import load_dotenv
 import services.Graph_db_service as graph_db_service
 import time
+import openai
+import json
+from services.Graph_db_service import get_db_driver
 
 router = APIRouter()
 load_dotenv()
 
 GITHUB_API_BASE = "https://api.github.com"
+
+# Initialize OpenAI client with API key from environment variable
+openai.api_key = os.getenv("OPENAI_API_KEY")
+if not openai.api_key:
+    print("WARNING: OPENAI_API_KEY environment variable not set")
 
 def get_github_headers_from_request(request):
     """Get GitHub headers from the request's Authorization header"""
@@ -193,10 +201,18 @@ async def fetch_commits(
             added_files = []
             modified_files = []
             deleted_files = []
+            total_additions = 0
+            total_deletions = 0
             
             for file in files:
                 status = file.get("status", "")
                 path = file.get("filename", "")
+                
+                # Collect lines added/removed information
+                additions = file.get("additions", 0)
+                deletions = file.get("deletions", 0)
+                total_additions += additions
+                total_deletions += deletions
                 
                 if status == "added":
                     added_files.append(path)
@@ -204,6 +220,24 @@ async def fetch_commits(
                     modified_files.append(path)
                 elif status == "removed":
                     deleted_files.append(path)
+            
+            # Call the LLM scoring method to evaluate commit quality
+            start_score_time = time.time()
+            commit_score = await score_commit_with_llm(
+                message=message,
+                additions=total_additions,
+                deletions=total_deletions,
+                added_files=added_files,
+                modified_files=modified_files,
+                deleted_files=deleted_files
+            )
+            end_score_time = time.time()
+            print(f"Time taken to score commit with LLM: {end_score_time - start_score_time} seconds")
+            
+            # Extract scores from the LLM response
+            overall_code_quality = commit_score.get("OverallCodeQuality", 0)
+            commit_type_set = commit_score.get("CommitTypeSet", [])
+            raw_scores = commit_score.get("RawScores", {})
             
             # Save to SQL database
             repo_id = get_repo_id(repo)
@@ -224,7 +258,11 @@ async def fetch_commits(
                 added_files=added_files,
                 modified_files=modified_files,
                 deleted_files=deleted_files,
-                repository_info=repository_info
+                repository_info=repository_info,
+                lines_added=total_additions,
+                lines_removed=total_deletions,
+                overall_code_quality=overall_code_quality,
+                commit_type_set=commit_type_set
             )
             end_graph_time = time.time()
             print(f"Time taken to insert commit data into Neo4j: {end_graph_time - start_graph_time} seconds")
@@ -236,7 +274,12 @@ async def fetch_commits(
                 "date": date,
                 "message": message,
                 "url": commit_url,
-                "files_changed": len(added_files) + len(modified_files) + len(deleted_files)
+                "files_changed": len(added_files) + len(modified_files) + len(deleted_files),
+                "lines_added": total_additions,
+                "lines_removed": total_deletions,
+                "overall_code_quality": overall_code_quality,
+                "commit_types": commit_type_set,
+                "type_scores": raw_scores
             })
 
         return {"repository": repo, "branch": branch, "commits": commits}
@@ -247,6 +290,267 @@ async def fetch_commits(
     except Exception as e:
         print(f"Unexpected error fetching commits: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Update the score_commit_with_llm function to use the updated ChatCompletion API format:
+async def score_commit_with_llm(message, additions, deletions, added_files, modified_files, deleted_files):
+    """
+    Score a commit using GPT-4.1 Nano to evaluate its quality and determine its types.
+    
+    Returns:
+        dict: A dictionary containing OverallCodeQuality (float) and CommitTypeSet (list)
+    """
+    # Prepare a summary of file changes for the LLM
+    file_changes_summary = []
+    for file in added_files:
+        file_changes_summary.append(f"Added: {file}")
+    for file in modified_files:
+        file_changes_summary.append(f"Modified: {file}")
+    for file in deleted_files:
+        file_changes_summary.append(f"Deleted: {file}")
+    
+    diff_summary = "\n".join(file_changes_summary)
+    diff_summary += f"\nTotal lines added: {additions}\nTotal lines removed: {deletions}"
+    
+    # Define the function schema for function calling
+    functions = [
+        {
+            "name": "commit_classification",
+            "description": "Classify a commit based on its message and changes",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "OverallCodeQuality": {
+                        "type": "number",
+                        "description": "A score between 0 and 1 indicating the overall quality of the commit based on effort, code quality, and documentation"
+                    },
+                    "feat": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit adds a new feature"
+                    },
+                    "fix": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit fixes a bug"
+                    },
+                    "docs": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit changes documentation only"
+                    },
+                    "style": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit makes code formatting changes with no logic changes"
+                    },
+                    "refactor": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit refactors code without adding features or fixing bugs"
+                    },
+                    "perf": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit improves performance"
+                    },
+                    "test": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit adds or modifies tests"
+                    },
+                    "chore": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit makes routine changes like config or metadata"
+                    },
+                    "build": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit changes build system or dependencies"
+                    },
+                    "ci": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit makes CI/CD changes"
+                    },
+                    "revert": {
+                        "type": "number",
+                        "description": "Confidence score (0 to 1) for whether this commit reverts previous commits"
+                    }
+                },
+                "required": ["OverallCodeQuality", "feat", "fix", "docs", "style", "refactor", 
+                           "perf", "test", "chore", "build", "ci", "revert"]
+            }
+        }
+    ]
+    
+    # Prepare the prompt for the LLM
+    prompt = f"""You are a commit classification engine that analyzes Git commit messages and diffs to determine the functional purpose of the commit and assess its overall quality.
+
+    Your task:
+    1. Analyze the commit message and code diff information provided.
+    2. Assign a confidence score (0 to 1) for each category.
+    3. Assign an OverallCodeQuality score (0 to 1) based on:
+    - The effort needed to make the code changes
+    - Quality and clarity of the code
+    - Completeness of documentation
+    - Adherence to best practices
+    - Complexity and scope of the changes
+
+    Available categories are:
+    - feat: A new feature
+    - fix: A bug fix
+    - docs: Documentation only changes
+    - style: Code formatting, no logic changes
+    - refactor: Code changes that neither fix a bug nor add a feature
+    - perf: Performance improvements
+    - test: Adding or modifying tests
+    - chore: Routine changes like config or metadata
+    - build: Build system or dependency changes
+    - ci: Continuous integration/deployment changes
+    - revert: Reverting previous commits
+
+    Input:
+    - Commit Message: "{message}"
+    - Commit Diff Summary:
+    {diff_summary}
+
+    IMPORTANT: You must respond using the commit_classification function provided to you. Include every field mentioned in the output. Your output must follow this exact structure:
+    {{
+    "OverallCodeQuality": 0.XX, // A score between 0 and 1
+    "feat": 0.XX, // Score for feature changes
+    "fix": 0.XX, // Score for bug fixes
+    "docs": 0.XX, // And so on for each category
+    ...
+    }}
+
+    Make sure every category has a value, and all values are decimal numbers between 0 and 1.
+    """
+    
+    try:
+        # Updated OpenAI API call to use the client, not the deprecated acreate method
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",  # Replace with the actual model name if different
+            messages=[
+                {"role": "system", "content": "You are a commit classification engine that provides accurate and consistent assessments."},
+                {"role": "user", "content": prompt}
+            ],
+            functions=functions,
+            function_call={"name": "commit_classification"}
+        )
+        
+        # Extract the function call arguments (updated for new API format)
+        function_call = response.choices[0].message.function_call
+        if function_call:
+            function_args = json.loads(function_call.arguments)
+            
+            # Get the overall code quality score
+            overall_quality = function_args.get("OverallCodeQuality", 0.5)
+            
+            # For CommitTypeSet, we'll include any category with a score >= 0.6
+            threshold = 0.6
+            commit_types = []
+            
+            categories = {
+                "feat": "FEATURE",
+                "fix": "BUG_FIX",
+                "docs": "DOCUMENTATION",
+                "style": "STYLE",
+                "refactor": "REFACTORING",
+                "perf": "PERFORMANCE",
+                "test": "TESTING",
+                "chore": "MAINTENANCE",
+                "build": "BUILD",
+                "ci": "CI_CD",
+                "revert": "REVERT"
+            }
+            
+            for category, enum_value in categories.items():
+                if function_args.get(category, 0) >= threshold:
+                    commit_types.append(enum_value)
+            
+            # If no category meets the threshold, add GENERAL
+            if not commit_types:
+                commit_types.append("GENERAL")
+            
+            return {
+                "OverallCodeQuality": overall_quality,
+                "CommitTypeSet": commit_types,
+                # Include the raw scores for debugging or more granular usage
+                "RawScores": {k: v for k, v in function_args.items() if k != "OverallCodeQuality"}
+            }
+        
+        # Fallback if function calling failed
+        return {
+            "OverallCodeQuality": 0.5,
+            "CommitTypeSet": ["GENERAL"],
+            "RawScores": {}
+        }
+    
+    except Exception as e:
+        print(f"Error calling LLM API: {str(e)}")
+        # Provide a fallback response in case of errors
+        return {
+            "OverallCodeQuality": 0.5,
+            "CommitTypeSet": ["GENERAL"],
+            "Error": str(e)
+        }
+
+@router.get("/repo/developer-quality-scores")
+async def get_developer_quality_scores(
+    repo: str = Query(..., description="Format: username/repository")
+):
+    """
+    Get the sum of code quality scores for each developer in a repository.
+    
+    Returns a list of developers sorted by their total quality score (highest first).
+    """
+    try:
+        # Create a Cypher query to sum quality scores per developer
+        query = """
+        MATCH (c:Commit)-[:BELONGS_TO]->(r:Repository {name: $repo_name})
+        MATCH (c)-[:COMMITTED_BY]->(d:Developer)
+        WITH d, SUM(c.overall_code_quality) AS total_quality_score, COUNT(c) AS commit_count
+        RETURN d.name AS developer_name, 
+               d.github AS github_username, 
+               d.email AS email,
+               total_quality_score,
+               commit_count
+        ORDER BY total_quality_score DESC
+        """
+        
+        # Execute the query in a separate thread to avoid blocking
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None,
+            _execute_neo4j_query,
+            query,
+            {"repo_name": repo}
+        )
+        
+        # Format the results
+        developer_scores = []
+        for record in results:
+            developer_scores.append({
+                "name": record["developer_name"],
+                "github": record["github_username"],
+                "email": record["email"],
+                "total_quality_score": record["total_quality_score"],
+                "commit_count": record["commit_count"],
+                "average_quality": round(record["total_quality_score"] / record["commit_count"], 2) if record["commit_count"] > 0 else 0
+            })
+        
+        return {
+            "repository": repo,
+            "developer_scores": developer_scores
+        }
+    
+    except Exception as e:
+        print(f"Error getting developer quality scores: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving developer scores: {str(e)}")
+
+
+def _execute_neo4j_query(query, params=None):
+    """Helper function to execute a Neo4j query and return results"""
+    driver = get_db_driver()
+    try:
+        with driver.session() as session:
+            result = session.run(query, params or {})
+            return [record.data() for record in result]
+    finally:
+        driver.close()
 
 #NOT TESTED 
 @router.get("/commit/{sha}/files")
