@@ -93,3 +93,14 @@ CREATE TABLE developer_contributions (
     contributions_total INT DEFAULT 0,
     FOREIGN KEY (contribution_period_id) REFERENCES contribution_periods(id)
 );
+
+CREATE TABLE repo_stats (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    repo_id INT,
+    snapshot_date DATE NOT NULL,
+    commits INT,
+    issues INT,
+    pull_requests INT,
+    open_issues INT,
+    FOREIGN KEY (repo_id) REFERENCES repositories(id)
+);

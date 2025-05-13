@@ -1,11 +1,16 @@
+import sys
+import os
+
+# Add parent directory to path to make imports work from module root
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+
 from fastapi import APIRouter, HTTPException, Query, Request
 import httpx
-import os
 from typing import List
 import asyncio
-import sys
-sys.path.append('/Users/zehraiyigun/Desktop/DevInsights')
-from utils.github_auth import get_github_headers  # Fixed import path
+from utils.github_auth import get_github_headers
 import crud as crud
 from dotenv import load_dotenv
 import services.Graph_db_service as graph_db_service
@@ -16,12 +21,12 @@ load_dotenv()
 
 GITHUB_API_BASE = "https://api.github.com"
 
-# Utility to get GitHub headers
-# def get_github_headers():
-#     token = os.getenv("GITHUB_TOKEN")
-#     if not token:
-#         raise Exception("GitHub token not found.")
-#     return {"Authorization": f"Bearer {token}"}
+def get_github_headers():
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        raise Exception("GitHub token not found.")
+    return {"Authorization": f"token {token}"}
+
 
 def get_github_headers_from_request(request):
     """Get GitHub headers from the request's Authorization header"""
@@ -136,7 +141,8 @@ async def fetch_commits(
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=get_github_headers_from_request(request))
+            response = await client.get(url, headers=get_github_headers())
+            raw_commits = response.json()
             
             start_detail_time = time.time()
             # Get detailed commit data for each commit
@@ -276,7 +282,7 @@ async def get_diff_files(repo: str, sha: str):
 
 
 @router.get("/pulls")
-async def fetch_pull_requests(repo: str, state: str = "all"):
+async def fetch_pull_requests(request: Request, repo: str, state: str = "all"):
     """
     Fetch pull requests from a GitHub repo (open, closed, all).
     """
@@ -450,70 +456,108 @@ async def fetch_contributors(repo: str, limit: int = 100):
 
 
 @router.get("/repo")
-async def fetch_repo_info(repo: str):
+async def fetch_repo_info(repo: str, request: Request):
     """
-    Fetch basic metadata of the repository.
+    Fetch basic metadata of a GitHub repository (format: owner/repo).
     """
     url = f"{GITHUB_API_BASE}/repos/{repo}"
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, headers=get_github_headers())
             resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+            data = resp.json()
+            return {
+                "name": data.get("name"),
+                "full_name": data.get("full_name"),
+                "description": data.get("description"),
+                "language": data.get("language"),
+                "stars": data.get("stargazers_count"),
+                "forks": data.get("forks_count"),
+                "url": data.get("html_url"),
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("updated_at")
+            }
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"GitHub API error: {e.response.text}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.get("/sync")
-async def sync_all(repo: str, branch: str = "main"):
+async def sync_all(request: Request, repo: str = Query(...), branch: str = Query("main")):
     """
-    Sync all GitHub data (commits, PRs, issues, reviews, contributors) for a repo.
+    Sync all GitHub data for a repository (commits, PRs, issues, contributors).
     """
-    return {
-        "commits": await fetch_commits(repo, branch),
-        "pull_requests": await fetch_pull_requests(repo),
-        "issues": await fetch_issues(repo),
-        "contributors": await fetch_contributors(repo),
-    }
+    try:
+        return {
+            "commits": await fetch_commits(request=request, repo=repo, branch=branch),
+            "pull_requests": await fetch_pull_requests(request=request, repo=repo),
+            "issues": await fetch_issues(request=request, repo=repo),
+            "contributors": await fetch_contributors(request=request, repo=repo)
+
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during sync: {str(e)}")
 
 @router.get("/repo/{owner}/{repo}/stats")
 async def get_repo_stats(owner: str, repo: str):
     """
-    Get total numbers of commits, issues, PRs for a repository.
+    Get and store total numbers of commits, issues, and PRs for a repository.
     """
     headers = get_github_headers()
+    base_url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}"
 
-    async with httpx.AsyncClient() as client:
-        try:
-            # Total issues (with PRs included)
-            repo_info = await client.get(f"{GITHUB_API_BASE}/repos/{owner}/{repo}", headers=headers)
-            repo_info.raise_for_status()
-            issues_count = repo_info.json().get("open_issues_count", 0)
+    try:
+        async with httpx.AsyncClient() as client:
+            # 1. Repo info (open issue count)
+            repo_info_resp = await client.get(base_url, headers=headers)
+            repo_info_resp.raise_for_status()
+            repo_info = repo_info_resp.json()
+            open_issues_count = repo_info.get("open_issues_count", 0)
+            description = repo_info.get("description", "")
 
-            # PR count (get last page number)
-            prs_resp = await client.get(f"{GITHUB_API_BASE}/repos/{owner}/{repo}/pulls?state=all&per_page=1", headers=headers)
-            pr_count = extract_total_from_link_header(prs_resp.headers.get("Link"))
+            # 2. PR count using pagination
+            pr_resp = await client.get(f"{base_url}/pulls?state=all&per_page=1", headers=headers)
+            pr_count = extract_total_from_link_header(pr_resp.headers.get("Link"))
 
-            # Actual issues (subtract PRs or use search)
-            search_resp = await client.get(f"{GITHUB_API_BASE}/search/issues?q=repo:{owner}/{repo}+type:issue", headers=headers)
-            issues_total = search_resp.json().get("total_count", 0)
+            # 3. Actual issue count (excluding PRs)
+            issue_resp = await client.get(
+                f"{GITHUB_API_BASE}/search/issues?q=repo:{owner}/{repo}+type:issue",
+                headers=headers
+            )
+            issues_total = issue_resp.json().get("total_count", 0)
 
-            # Commits via stats/contributors (slow but accurate)
-            contribs_resp = await client.get(f"{GITHUB_API_BASE}/repos/{owner}/{repo}/stats/contributors", headers=headers)
-            await asyncio.sleep(1)  # Wait for stats to be ready
-            commits_data = contribs_resp.json()
-            commit_total = sum(c["total"] for c in commits_data) if commits_data else None
+            # 4. Commit count via stats endpoint (poll if necessary)
+            stats_url = f"{base_url}/stats/contributors"
+            for _ in range(3):
+                stats_resp = await client.get(stats_url, headers=headers)
+                if stats_resp.status_code == 202:
+                    await asyncio.sleep(1)
+                    continue
+                stats_resp.raise_for_status()
+                break
+            else:
+                raise HTTPException(status_code=202, detail="GitHub is computing commit stats. Try again later.")
+
+            contributors_data = stats_resp.json()
+            commit_total = sum(c.get("total", 0) for c in contributors_data) if contributors_data else 0
+
+            # 5. Store in DB
+            repo_id = crud.get_or_create_repository_id(owner, repo, description)
+            crud.insert_repo_stats(repo_id, commit_total, issues_total, pr_count, open_issues_count)
 
             return {
                 "commits": commit_total,
                 "issues": issues_total,
                 "pull_requests": pr_count,
-                "open_issues_count_from_repo": issues_count
+                "open_issues_count_from_repo": open_issues_count
             }
 
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    
+    
 def extract_total_from_link_header(link_header: str):
     """
     Parses GitHub Link header to get the last page number.

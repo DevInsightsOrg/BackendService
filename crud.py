@@ -213,6 +213,88 @@ def insert_developer_contribution(contribution_period_id: int, contributor_usern
 
     except mysql.connector.Error as err:
         raise HTTPException(status_code=500, detail=f"MySQL error: {str(err)}")
+    
+
+def insert_commit_file(sha: str, repo_id: int, file: dict):
+    """
+    Insert file changed in a commit into the database.
+    """
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+
+        query = """
+        INSERT INTO commit_files (sha, repo_id, filename, status, additions, deletions, changes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            status = VALUES(status),
+            additions = VALUES(additions),
+            deletions = VALUES(deletions),
+            changes = VALUES(changes)
+        """
+        values = (
+            sha,
+            repo_id,
+            file.get("filename"),
+            file.get("status"),
+            file.get("additions"),
+            file.get("deletions"),
+            file.get("changes")
+        )
+        cursor.execute(query, values)
+        connection.commit()
+        cursor.close()
+        connection.close()
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"MySQL error: {str(err)}")
+    
+def get_or_create_repository_id(owner: str, repo_name: str, description: str = None) -> int:
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+
+        # Check if repo exists
+        cursor.execute(
+            "SELECT id FROM repositories WHERE owner = %s AND repo_name = %s",
+            (owner, repo_name)
+        )
+        result = cursor.fetchone()
+
+        if result:
+            return result['id']
+
+        # Insert new repo
+        cursor.execute(
+            """
+            INSERT INTO repositories (owner, repo_name, description, created_at, updated_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
+            """,
+            (owner, repo_name, description)
+        )
+        connection.commit()
+        repo_id = cursor.lastrowid
+
+        cursor.close()
+        connection.close()
+        return repo_id
+
+    except mysql.connector.Error as err:
+        raise HTTPException(status_code=500, detail=f"MySQL error: {str(err)}")
+
+
+def insert_repo_stats(repo_id: int, commits: int, issues: int, prs: int, open_issues: int):
+    """
+    Store aggregate GitHub statistics for a repository.
+    This example assumes you're just printing or logging.
+    If you have a stats table, you can INSERT/UPDATE there.
+    """
+    try:
+        print(f"[repo_id={repo_id}] Commits={commits}, Issues={issues}, PRs={prs}, OpenIssues={open_issues}")
+        # Extend this to store in a separate 'repo_stats' table if needed.
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Failed to store stats: {str(err)}")
+
+
 
 # crud.py
 
