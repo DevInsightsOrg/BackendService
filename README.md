@@ -5,12 +5,12 @@ Group-5 / Cs453 / Spring 2025
 !!! Make sure you use "yaşar" branch
 
 add .env file with following content (fill Github token and openai api key):
-NEO4J_URI="neo4j+s://a453bd55.databases.neo4j.io" \n
-NEO4J_USERNAME="neo4j" \n
-NEO4J_PASSWORD="9BSPQwMEm4TWSp_TiN1gkEYfr1OGmv0xdpxZtsruQik" \n
-GITHUB_TOKEN="" \n
-DB_HOST="insightsdb.czy2mo0kejlp.eu-north-1.rds.amazonaws.com" \n
-DB_USER="admin" \n
+NEO4J_URI="neo4j+s://a453bd55.databases.neo4j.io"
+NEO4J_USERNAME="neo4j"
+NEO4J_PASSWORD="9BSPQwMEm4TWSp_TiN1gkEYfr1OGmv0xdpxZtsruQik"
+GITHUB_TOKEN=""
+DB_HOST="insightsdb.czy2mo0kejlp.eu-north-1.rds.amazonaws.com"
+DB_USER="admin"
 DB_PASSWORD="DevInsights453"
 DB_NAME="devinsights"
 
