@@ -23,3 +23,7 @@ DB_NAME="devinsights"
 GITHUB_CLIENT_ID="Ov23libNDZVqB6GpNjNX"
 GITHUB_CLIENT_SECRET="636584ba17e3be0de62ed295a4ea270a97430379"
 OPENAI_API_KEY=""
+
+---
+
+Please run pip install -r requirements.txt before running the code
