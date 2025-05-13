@@ -115,6 +115,11 @@ async def get_user_repositories(request: Request):
                 repositories.append({
                     "id": str(repo.get("id")),
                     "name": repo.get("name"),
+                    "owner": {
+                        "login": repo.get("owner", {}).get("login"),
+                        "id": str(repo.get("owner", {}).get("id")),
+                        "avatar_url": repo.get("owner", {}).get("avatar_url")
+                    },
                     "description": repo.get("description"),
                     "language": repo.get("language"),
                     "isPrivate": repo.get("private", False),
@@ -138,6 +143,7 @@ async def fetch_commits(
     Fetch latest commits from a GitHub repository branch.
     """
     url = f"{GITHUB_API_BASE}/repos/{repo}/commits?sha={branch}&per_page={limit}"
+    headers = get_github_headers_from_request(request)
 
     try:
         async with httpx.AsyncClient() as client:
@@ -146,11 +152,14 @@ async def fetch_commits(
             
             start_detail_time = time.time()
             # Get detailed commit data for each commit
+            start_detail_time = time.time()
             detailed_commits = []
+            
             for commit in raw_commits:
                 sha = commit.get("sha")
                 detail_url = f"{GITHUB_API_BASE}/repos/{repo}/commits/{sha}"
-                detail_resp = await client.get(detail_url, headers=get_github_headers())
+                detail_resp = await client.get(detail_url, headers=headers)
+                
                 if detail_resp.status_code == 200:
                     detailed_commits.append(detail_resp.json())
                 else:
@@ -241,6 +250,7 @@ async def fetch_commits(
         print(f"Error response from GitHub API: {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
+        print(f"Unexpected error fetching commits: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 #NOT TESTED 
