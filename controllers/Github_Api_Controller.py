@@ -16,13 +16,6 @@ load_dotenv()
 
 GITHUB_API_BASE = "https://api.github.com"
 
-# Utility to get GitHub headers
-# def get_github_headers():
-#     token = os.getenv("GITHUB_TOKEN")
-#     if not token:
-#         raise Exception("GitHub token not found.")
-#     return {"Authorization": f"Bearer {token}"}
-
 def get_github_headers_from_request(request):
     """Get GitHub headers from the request's Authorization header"""
     authorization = request.headers.get("Authorization")
@@ -110,6 +103,11 @@ async def get_user_repositories(request: Request):
                 repositories.append({
                     "id": str(repo.get("id")),
                     "name": repo.get("name"),
+                    "owner": {
+                        "login": repo.get("owner", {}).get("login"),
+                        "id": str(repo.get("owner", {}).get("id")),
+                        "avatar_url": repo.get("owner", {}).get("avatar_url")
+                    },
                     "description": repo.get("description"),
                     "language": repo.get("language"),
                     "isPrivate": repo.get("private", False),
@@ -133,18 +131,30 @@ async def fetch_commits(
     Fetch latest commits from a GitHub repository branch.
     """
     url = f"{GITHUB_API_BASE}/repos/{repo}/commits?sha={branch}&per_page={limit}"
+    headers = get_github_headers_from_request(request)
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=get_github_headers_from_request(request))
+            # Get list of commits
+            response = await client.get(url, headers=headers)
             
-            start_detail_time = time.time()
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code, 
+                    detail=f"Failed to fetch commits: {response.text}"
+                )
+                
+            raw_commits = response.json()
+            
             # Get detailed commit data for each commit
+            start_detail_time = time.time()
             detailed_commits = []
+            
             for commit in raw_commits:
                 sha = commit.get("sha")
                 detail_url = f"{GITHUB_API_BASE}/repos/{repo}/commits/{sha}"
-                detail_resp = await client.get(detail_url, headers=get_github_headers())
+                detail_resp = await client.get(detail_url, headers=headers)
+                
                 if detail_resp.status_code == 200:
                     detailed_commits.append(detail_resp.json())
                 else:
@@ -235,6 +245,7 @@ async def fetch_commits(
         print(f"Error response from GitHub API: {e.response.text}")
         raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
+        print(f"Unexpected error fetching commits: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 #NOT TESTED 

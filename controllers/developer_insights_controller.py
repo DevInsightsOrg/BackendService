@@ -213,3 +213,65 @@ async def get_repo_summary(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving repository summary: {str(e)}")
+
+@router.get("/api/debug/repo/{owner}/{repo}")
+async def debug_repository(
+    owner: str, 
+    repo: str, 
+    queries: GraphQueries = Depends(get_graph_queries)
+):
+    """Debug repository data in the database."""
+    repo_name = f"{owner}/{repo}"
+    
+    with queries.driver.session() as session:
+        try:
+            # Check repository
+            repo_result = session.run("""
+                MATCH (r:Repository {name: $repo_name})
+                RETURN r
+            """, repo_name=repo_name)
+            
+            repo_record = repo_result.single()
+            repo_exists = repo_record is not None
+            
+            # Check files
+            files_result = session.run("""
+                MATCH (f:File)-[:BELONGS_TO]->(:Repository {name: $repo_name})
+                RETURN count(f) as file_count
+            """, repo_name=repo_name)
+            
+            files_record = files_result.single()
+            file_count = files_record["file_count"] if files_record else 0
+            
+            # Check developers
+            devs_result = session.run("""
+                MATCH (d:Developer)-[:BELONGS_TO]->(:Repository {name: $repo_name})
+                RETURN count(d) as dev_count
+            """, repo_name=repo_name)
+            
+            devs_record = devs_result.single()
+            dev_count = devs_record["dev_count"] if devs_record else 0
+            
+            # Check commits
+            commits_result = session.run("""
+                MATCH (c:Commit)-[:BELONGS_TO]->(:Repository {name: $repo_name})
+                RETURN count(c) as commit_count
+            """, repo_name=repo_name)
+            
+            commits_record = commits_result.single()
+            commit_count = commits_record["commit_count"] if commits_record else 0
+            
+            print(f"Debug repository {repo_name}: exists={repo_exists}, files={file_count}, devs={dev_count}, commits={commit_count}")
+            
+            return {
+                "repository_exists": repo_exists,
+                "repository_name": repo_name,
+                "file_count": file_count,
+                "developer_count": dev_count,
+                "commit_count": commit_count
+            }
+        except Exception as e:
+            import traceback
+            print(f"Error in debug_repository: {str(e)}")
+            print(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error debugging repository: {str(e)}")
